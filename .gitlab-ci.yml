@@ -1,0 +1,556 @@
+# Copyright (C) 2016-2022 Simon Josefsson
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+stages:
+
+# The "quick" stage should complete as quickly as possible but still
+# excercise some useful internal self-tests.  Primarily this is
+# achieved by --disable-doc and avoiding the 'make dist' step.  Having
+# an early stage like this avoids wasting build cycles attempting the
+# bootstrap builds on many platforms.
+
+  - quick
+
+# The "build" stage should attempt to build from version controlled
+# sources on platforms we support development on, with the variety of
+# pre-dependencies that we want to support.  Typically these builds
+# results in a tarball artifact.
+
+  - build
+
+# The "test" stage attempt to build the tarball on all platforms we
+# support building the project on, with as many combinations of
+# pre-depencencies as useful.
+
+  - test
+
+variables:
+  BUILD_IMAGES_PROJECT: libidn/build-images
+  FEDORA_BUILD: buildenv-fedora
+  GET_SOURCES_ATTEMPTS: "3"
+
+B-Debian-quick:
+  image: $CI_REGISTRY/libidn/build-images:libidn2-quick-Debian-testing
+  stage: quick
+  script:
+  - echo $GNULIB_SRCDIR
+  - time ./bootstrap --skip-po
+  - git diff --exit-code # catch changes resulting in *-dirty version number
+  - mkdir -p a/b/c
+  - cd a/b/c
+  - time ../../../configure CFLAGS=-O0 --enable-gcc-warnings --disable-doc
+  - grep am_cv_func_iconv_summary config.log
+  - time make syntax-check gnulib_dir=$GNULIB_SRCDIR
+  - time make V=1
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y idn2 libidn2-dev
+  - set -o pipefail && (rm -f foo && gcc -o foo -Itests ../../../tests/test-lookup.c -lidn2 -lunistring && ./foo ../../../tests/IdnaTest.txt | tail -1) || (rm -f foo && gcc -o foo -Itests ../../../tests/test-lookup.c lib/.libs/libidn2.a gl/.libs/libgnu.a unistring/.libs/libunistring.a && ./foo ../../../tests/IdnaTest.txt | tail -1)
+  - set -o pipefail && rm -f foo && gcc -o foo ../../../tests/test-register.c -lidn2 && ./foo | tail -1
+  - set -o pipefail && rm -f foo && gcc -o foo ../../../tests/test-strerror.c -lidn2 && ./foo | tail -1
+  - set -o pipefail && rm -f foo && gcc -o foo ../../../tests/test-tounicode.c -lidn2 -lunistring && ./foo | tail -1
+  - set -o pipefail && rm -f foo && gcc -o foo ../../../tests/test-locale.c -lidn2 && ./foo | tail -1
+  - env LANG=C.UTF-8 IDN2=idn2 ../../../tests/test-idn2.sh
+  - time make check VERBOSE=t
+  - git diff --exit-code # nothing should change version controlled files
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+sast:
+  stage: quick
+  # SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
+  variables:
+    SAST_EXCLUDED_PATHS: examples, fuzz, tests, lib/gendata.c, lib/gentr46map.c
+include:
+- template: Security/SAST.gitlab-ci.yml
+
+B-Alpine-quick:
+  image: $CI_REGISTRY/libidn/build-images:libidn2-quick-Alpine
+  stage: build
+  script:
+  - time ./bootstrap --skip-po
+  - time ./configure --enable-gcc-warnings --disable-doc
+  - time make V=1
+  - time make syntax-check
+  - time make check VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+B-AlmaLinux8:
+  image: $CI_REGISTRY/libidn/build-images:libidn2-AlmaLinux8
+  stage: build
+  script:
+  - time ./bootstrap --skip-po
+  - time ./configure
+  - time make V=1
+  - time make check VERBOSE=t
+  - rm -rf contrib/ # FIXME XXX remove once we support modern abidiff -- see issue #102
+  - time make dist
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+B-Debian11:
+  image: $CI_REGISTRY/libidn/build-images:libidn2-Debian11
+  stage: build
+  script:
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -q indent help2man
+  - ./bootstrap --skip-po
+  - ./configure --enable-gcc-warnings --enable-valgrind-tests
+  - make V=1
+  - make check VERBOSE=t
+  - make -C doc compare-makefile
+  - make syntax-check
+  - make abi-check
+  - make dist
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+B-Debian-testing:
+  image: debian:testing
+  stage: build
+  before_script:
+  - apt-get update -qq -y
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -q git make autoconf automake libtool gettext autopoint gperf libunistring-dev valgrind gengetopt help2man texinfo texlive git2cl gtk-doc-tools
+  script:
+  - ./bootstrap --skip-po
+  - ./configure --enable-gcc-warnings --enable-valgrind-tests
+  - make V=1
+  - make check VERBOSE=t
+  - rm -rf contrib/ # FIXME XXX remove once we support modern abidiff -- see issue #102
+  - rm unistring/libunistring.la # FIXME XXX debug why this is needed...
+  - make dist
+  - make install
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq man
+  - git clone --depth=1 https://salsa.debian.org/debian/libidn2.git debian-libidn2
+  - LC_ALL=C.UTF-8 debian-libidn2/debian/tests/idn2
+  - debian-libidn2/debian/tests/libidn2
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+B-armcross:
+  image: $CI_REGISTRY/libidn/build-images:libidn2-Debian11
+  stage: build
+  before_script:
+  - apt-get update -qq -y
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -q gcc-arm-linux-gnueabi qemu-user qemu-user-binfmt file
+  - update-binfmts --enable qemu-arm
+  script:
+  - ./bootstrap --skip-po
+  - ./configure --enable-gcc-warnings --disable-doc
+  - make V=1
+  - ./configure --enable-gcc-warnings --disable-doc --host=arm-linux-gnueabi CFLAGS="-static --static"
+  - make V=1
+  - file src/idn2
+  - LANG=C.UTF-8 qemu-arm src/idn2 --debug foo
+  - LANG=C.UTF-8 src/idn2 --debug räksmörgås
+  - LANG=C.UTF-8 make check VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+# https://releases.llvm.org/13.0.0/tools/clang/docs/AddressSanitizer.html
+# https://releases.llvm.org/13.0.0/tools/clang/docs/UndefinedBehaviorSanitizer.html
+# https://lists.gnu.org/archive/html/bug-gnulib/2022-03/msg00016.html
+B-Fedora35-ASAN/UBSan:
+  stage: build
+  image: $CI_REGISTRY/libidn/build-images:libidn2-Fedora35
+  script:
+  - ./bootstrap --skip-po
+  - export CC=clang
+  - export CFLAGS="-fsanitize=address -g -O0"
+  - ASAN_OPTIONS=detect_leaks=0 ./configure --disable-doc --disable-gcc-warnings
+  - make V=1 -j$(nproc) check VERBOSE=t
+  - make clean
+  - export CFLAGS="-fsanitize=undefined,integer -fno-sanitize-recover=undefined,integer -g -O0"
+  - ./configure --disable-doc --disable-gcc-warnings
+  - make V=1 -C unistring
+  - make V=1 -C gl
+  - make V=1 -C lib CFLAGS="$CFLAGS -Wall -Wextra -Werror"
+  - make V=1 -C examples CFLAGS="$CFLAGS -Wall -Wextra -Werror -Wno-unused-parameter"
+  - make V=1 -j$(nproc) check VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+B-Fedora35-clang-analyzer:
+  stage: build
+  image: $CI_REGISTRY/libidn/build-images:libidn2-Fedora35
+  before_script:
+  - dnf install -y clang-analyzer
+  script:
+  - ./bootstrap --skip-po
+  - scan-build ./configure --enable-gtk-doc --enable-gtk-doc-pdf
+  - make -j$(nproc) -C unistring
+  - make -j$(nproc) -C gl
+  - scan-build -o clang-analyzer make -j$(nproc) -C lib
+  - make
+  - make web-manual
+  - rm -rf contrib/ # FIXME XXX remove once we support modern abidiff -- see issue #102
+  - make dist
+  tags:
+  - shared
+  except:
+  - tags
+  artifacts:
+    when: on_success
+    paths:
+    - doc/reference
+    - doc/manual
+    - clang-analyzer
+
+T-Debian5:
+  image: debian/eol:lenny
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - apt-get update
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make gcc locales-all
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - ./configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Debian9:
+  image: debian:stretch
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - apt-get update
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make gcc
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Debian10:
+  image: debian:buster
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - apt-get update
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make gcc
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Debian-testing:
+  image: debian:testing
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - apt-get update
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make gcc
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --enable-gcc-warnings
+  - grep am_cv_func_iconv_summary config.log
+  - cd ..
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq autoconf autopoint libtool gtk-doc-tools
+  - AUTOPOINT=true autoreconf -fvi
+  - ./configure --enable-gcc-warnings
+  - grep am_cv_func_iconv_summary config.log
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Alpine:
+  image: alpine:latest
+  stage: test
+  needs: [B-Debian-testing]
+  before_script:
+  - echo "ipv6" >> /etc/modules
+  - apk update
+  - apk add build-base
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - ./configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-ArchLinux:
+  image: archlinux:latest
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - pacman -Syu --noconfirm make gcc diffutils
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-CentOS7:
+  image: centos:7
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - yum -y install make gcc diffutils valgrind libunistring-devel
+  script:
+  - tar xfa libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - ./configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-AlmaLinux8:
+  image: almalinux:8
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - dnf --enablerepo=powertools -y install make gcc diffutils valgrind libunistring-devel
+  script:
+  - tar xfa libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - ./configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Ubuntu-14.04:
+  image: ubuntu:14.04
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - apt-get update -qq
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make gcc
+  script:
+  - tar xfa libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - ./configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Ubuntu rolling:
+  image: ubuntu:rolling
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - apt-get update -qq
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git make gcc gtk-doc-tools texinfo texlive texlive-plain-generic dblatex
+  script:
+  - tar xfa libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - ./configure --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  - make distcheck
+  # check if essential files are accidentally cleaned
+  - make clean
+  - make
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Mingw32:
+  image: debian:latest
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - dpkg --add-architecture i386
+  - apt-get update -qq
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make mingw-w64 wine wine32 libwine libwine:i386 binfmt-support wine-binfmt
+  - update-binfmts --enable wine
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --host=i686-w64-mingw32 CC='i686-w64-mingw32-gcc -static-libgcc' --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-Mingw64:
+  image: debian:latest
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - dpkg --add-architecture i386
+  - apt-get update -qq
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make mingw-w64 wine wine32 wine64 binfmt-support wine-binfmt
+  - update-binfmts --enable wine
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --host=x86_64-w64-mingw32 --enable-gcc-warnings
+  - make check V=1 VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+T-armcross:
+  image: debian:latest
+  stage: test
+  needs: [B-Debian11]
+  before_script:
+  - dpkg --add-architecture armel
+  - apt-get update -qq
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq make gcc-arm-linux-gnueabi libstdc++6:armel
+  script:
+  - tar xfz libidn2-*.tar.gz
+  - cd `ls -d libidn2-* | grep -v tar.gz`
+  - mkdir b
+  - cd b
+  - ../configure --host=arm-linux-gnueabi --enable-gcc-warnings
+  - make V=1
+  - arm-linux-gnueabi-readelf -h lib/.libs/libidn2.so
+  - arm-linux-gnueabi-readelf -h src/.libs/idn2
+  - make check VERBOSE=t
+  artifacts:
+    paths:
+    - libidn2-*.tar.gz
+    - ./config.h
+    - "**/*.log"
+
+MinGW64:
+  stage: build
+  image: $CI_REGISTRY/$BUILD_IMAGES_PROJECT:$FEDORA_BUILD
+  before_script:
+  - mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+  - echo ':DOSWin:M::MZ::/usr/bin/wine64:' > /proc/sys/fs/binfmt_misc/register
+  script:
+  - ./bootstrap --skip-po
+  - mingw64-configure --disable-valgrind-tests --disable-doc
+  - mingw64-make -j$(nproc)
+  - mingw64-make -j$(nproc) check VERBOSE=t
+  tags:
+  - shared
+  - docker
+  except:
+  - tags
+  artifacts:
+    expire_in: 2 weeks
+    when: on_failure
+    paths:
+      - ./config.h
+      - ./*.log
+      - tests/*.log
+
+.pages:
+  stage: test
+  needs: ["B-Fedora35-clang-analyzer"]
+  image: $CI_REGISTRY/libidn/build-images:libidn2-Debian11
+  before_script:
+  - env DEBIAN_FRONTEND=noninteractive apt-get install -y -q lcov help2man
+  script:
+  - rm -rf public
+  - mkdir -p public
+  - mv clang-analyzer/* public/clang-analyzer
+  - mv doc/manual public/manual
+  - mv doc/reference/html public/reference
+  - mv doc/reference/libidn2.pdf public/reference/
+  - ./bootstrap --skip-po
+  - CFLAGS="-g -O0" ./configure --enable-gtk-doc --enable-code-coverage --disable-gcc-warnings
+  - make -j$(nproc) check VERBOSE=t
+  - make local-code-coverage-output
+  - mv Libidn2-*-coverage public/coverage
+  - make clean
+  - make
+  - make -C fuzz check VERBOSE=t
+  - make code-coverage-capture
+  - contrib/make-coverage-badge "fuzz-coverage"
+  - mv Libidn2-*-coverage public/fuzz-coverage
+  - mv badge.svg public/fuzz-coverage/
+  artifacts:
+    when: on_success
+    paths:
+      - public
+
+pages:
+  extends: .pages
+  only:
+    - master
+
+pages-test:
+  extends: .pages
+  except:
+    - master
