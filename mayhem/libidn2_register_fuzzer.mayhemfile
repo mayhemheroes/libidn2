@@ -1,0 +1,4 @@
+project: PROJECT
+target: libidn2_register_fuzzer
+cmds:
+- cmd: /out/libidn2_register_fuzzer
