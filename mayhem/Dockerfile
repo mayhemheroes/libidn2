@@ -15,10 +15,9 @@
 ################################################################################
 
 FROM gcr.io/oss-fuzz-base/base-builder
-RUN apt-get update && apt-get install -y make autoconf automake gettext libtool autopoint pkg-config gengetopt curl gperf rsync wget
+RUN apt-get update && apt-get install -y make autoconf automake gettext libtool autopoint pkg-config gengetopt curl gperf rsync wget autoconf-archive
 
-COPY . libidn2
-RUN rm -rf libidn2/mayhem
+RUN git clone --recursive https://gitlab.com/libidn/libidn2.git
 
 WORKDIR libidn2
 COPY mayhem/build.sh $SRC/
